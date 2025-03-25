@@ -1,7 +1,0 @@
-target_variable,MAE,RMSE,R2
-fatalities,1.1209,16.3033,0.3483
-count_battles,0.1724,1.422,0.8591
-count_protests,0.6159,2.1798,0.6373
-count_riots,0.1147,0.6513,0.8019
-count_explosions,0.1685,1.9576,0.9295
-count_civ_violence,0.1595,0.623,0.6645
