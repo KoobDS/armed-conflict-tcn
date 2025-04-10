@@ -1,0 +1,28 @@
+data:
+  X_path: C:/Users/benja/Documents/ACLED/processed_data/X_tcn.npy
+  y_path: C:/Users/benja/Documents/ACLED/processed_data/y_tcn.npy
+  sequence_index: C:/Users/benja/Documents/ACLED/processed_data/sequence_index.csv
+
+output:
+  directory: outputs/tcn
+
+training:
+  batch_size: 1024
+  epochs: 25
+  lr: 1e-3
+
+model:
+  input_size: 7  # all the target features plus population
+  output_size: 6
+  forecast_horizon: 26
+  hidden_channels: [64, 64, 128, 128, 128, 128] # every output sees a full year of history
+  kernel_size: 3
+  dropout: 0.15
+
+targets:
+  - fatalities
+  - count_battles
+  - count_protests
+  - count_riots
+  - count_explosions
+  - count_civ_violence
