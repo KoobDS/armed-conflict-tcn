@@ -15,7 +15,7 @@ Unlike most of the literature relating to armed conflict events, we decided to u
 
 The Random Forest baseline performed surprsingly good:
 
-| Target Variable | MAE | MSE | R^2 |
+| Target Variable | MAE | MSE | $R^2$ |
 | --- | --- | --- | --- |
 | fatalities | 1.1209 | 16.3033 | 0.3483 |
 | count_battles | 0.1724 | 1.422 | 0.8591 |
