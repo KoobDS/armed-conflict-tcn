@@ -177,17 +177,38 @@ def run(cfg, eval_only=False):
     m_df = compute_metrics(y_true, y_pred, target_cols=cfg["targets"])
     m_df.to_csv(out/'tcn_metrics.csv', index=False)
 
-    # flat inference
-    samples, steps, _ = y_pred.shape
-    base = idx.iloc[te_idx].reset_index(drop=True)
-    rep  = np.repeat(base.index.values, steps)
-    flat = base.iloc[rep].copy()
-    flat["week_offset"] = np.tile(np.arange(steps), len(base))
-    flat = pd.concat([flat.reset_index(drop=True),
-                      pd.DataFrame({"true": y_true.ravel(),
-                                    "predicted": y_pred.ravel()})], axis=1)
-    flat.to_csv(out/'tcn_inference.csv', index=False)
-    print("Artifacts saved to", out, flush=True)
+    # ----- Inference output (fixed)
+    samples, steps, n_tgt = y_pred.shape
+
+    # Long format predictions
+    df_pred = (pd.DataFrame(y_pred.reshape(samples * steps, n_tgt),
+                            columns=cfg["targets"])
+            .stack().reset_index(name="predicted"))  # [sample_step, event, predicted]
+
+    df_true = (pd.DataFrame(y_true.reshape(samples * steps, n_tgt),
+                            columns=cfg["targets"])
+            .stack().reset_index(name="true"))  # [sample_step, event, true]
+
+    # Merge
+    df_pred.columns = ["flat_index", "event", "predicted"]
+    df_true.columns = ["flat_index", "event", "true"]
+    long_df = df_true.join(df_pred["predicted"])
+
+    # Add prediction_week and true sample index
+    long_df["prediction_week"] = long_df["flat_index"] % steps + 1
+    long_df["sample_idx"] = long_df["flat_index"] // steps
+    long_df.drop(columns="flat_index", inplace=True)
+
+    # Metadata — repeat each sample × steps × targets
+    meta = idx.iloc[te_idx][["country", "admin1"]].reset_index(drop=True)
+    meta_full = meta.loc[meta.index.repeat(steps * n_tgt)].reset_index(drop=True)
+
+    # Combine all
+    long_df = pd.concat([meta_full, long_df[["prediction_week", "event", "true", "predicted"]]], axis=1)
+
+    # Save
+    long_df.to_csv(out / "tcn_inference.csv", index=False)
+    print("Final cleaned inference saved →", out / "tcn_inference.csv")
 
 # ──────────────────────────── CLI ───────────────────────────────
 if __name__ == "__main__":
