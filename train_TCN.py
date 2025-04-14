@@ -10,187 +10,190 @@ Run: "python train_tcn.py --config config.yaml"
 """
 
 
-from __future__ import annotations  # postpone evaluation of type hints
-
-import argparse
-import os
-import time
+from __future__ import annotations
+import argparse, math, json, time
 from pathlib import Path
 
-import yaml
-import numpy as np
-import pandas as pd
-
-import torch
+import yaml, numpy as np, pandas as pd, torch
 from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader, Subset
 from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 
-torch.backends.cudnn.benchmark = True  # pick fastest conv kernels
+torch.backends.cudnn.benchmark = True
+torch.backends.cuda.matmul.allow_tf32 = True
 
-# Dataset
+
+### Dataset
+
 class ConflictTCNDataset(Dataset):
-    """Wrap (N, 52, 7) → (N, 26, 6) NumPy arrays as a PyTorch Dataset."""
-
-    def __init__(self, X: np.ndarray, y: np.ndarray):
-        super().__init__()
-        self.X = torch.from_numpy(X).float()
-        self.y = torch.from_numpy(y).float()
-
-    def __len__(self) -> int:  # noqa: D401 – simple method
-        return len(self.X)
-
-    def __getitem__(self, idx: int):
-        return self.X[idx], self.y[idx]
+    """52-week history → 26-week targets (memory-mapped, z-scored)."""
+    def __init__(self, X, y, mean, std):
+        self.X, self.y = X, y
+        self.mean = mean.astype(np.float32)
+        self.std  = np.clip(std, 1e-6, None).astype(np.float32)
+    def __len__(self): return len(self.X)
+    def __getitem__(self, i):
+        x = (self.X[i] - self.mean) / self.std
+        return (torch.from_numpy(np.nan_to_num(x, copy=False)).float(),
+                torch.from_numpy(self.y[i]).float())
 
 
-# Split
+### Helpers
 
-def build_split(index_df: pd.DataFrame, seq_len: int, forecast_horizon: int):
-    """
-    Return train and test indices based on correct date.
-    """
-    index_df = index_df.copy()
-    index_df["history_start"] = pd.to_datetime(index_df["history_start"])
+def time_split(df: pd.DataFrame, seq_len=52):
+    df = df.copy()
+    df["history_start"]  = pd.to_datetime(df["history_start"])
+    df["forecast_start"] = df["history_start"] + pd.Timedelta(weeks=seq_len)
+    cut = df["forecast_start"].max()
+    tr  = np.where(df["forecast_start"] <  cut)[0]
+    te  = np.where(df["forecast_start"] == cut)[0]
+    return tr, te
 
-    index_df["forecast_start"] = index_df["history_start"] + pd.Timedelta(weeks=seq_len)
+def streaming_mean_std(arr, rows, bs=8_000):
+    s = s2 = 0.0; n = 0
+    for i in range(0, len(rows), bs):
+        b = arr[rows[i:i+bs]].reshape(-1, arr.shape[2])
+        s  += b.sum(0);  s2 += (b**2).sum(0);  n += len(b)
+    m = s / n
+    v = np.maximum(s2 / n - m**2, 1e-12)
+    return m, np.sqrt(v)
 
-    test_cutoff = index_df["forecast_start"].max()  # expected 2024‑08‑05
+def build_loaders(cfg, X, y, idx):
+    tr_idx, te_idx = time_split(idx)
+    # 90-10 split for validation
+    val_cut = int(len(tr_idx) * (1 - cfg["training"]["val_split"]))
+    val_idx = tr_idx[val_cut:]; tr_idx = tr_idx[:val_cut]
 
-    train_mask = index_df["forecast_start"] < test_cutoff
-    test_mask = ~train_mask
+    mean, std = streaming_mean_std(X, tr_idx)
+    ds = ConflictTCNDataset(X, y, mean, std)
 
-    train_idx = np.where(train_mask)[0]
-    test_idx = np.where(test_mask)[0]
-
-    assert test_idx.size > 0, "No sequences found for the prediction horizon."
-    return train_idx, test_idx
-
-
-# Main
-
-def main(cfg: dict):
-    # Load arrays, metadata
-    X = np.load(cfg["data"]["X_path"], mmap_mode="r")  # (N, 52, 7)
-    y = np.load(cfg["data"]["y_path"], mmap_mode="r")  # (N, 26, 6)
-    index_df = pd.read_csv(cfg["data"]["sequence_index"])  # must have history_start
-
-    assert len(X) == len(index_df), "sequence_index length mismatch with X/y"
-
-    # Time-based split
-    SEQ_LEN = 52
-    F_HORIZ = cfg["model"]["forecast_horizon"]  # 26
-    train_idx, test_idx = build_split(index_df, SEQ_LEN, F_HORIZ)
-
-    ds = ConflictTCNDataset(X, y)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    pin = device.type == "cuda"
-    train_dl = DataLoader(Subset(ds, train_idx),
+    def loader(idxs, shuffle):
+        return DataLoader(Subset(ds, idxs),
                           batch_size=cfg["training"]["batch_size"],
-                          shuffle=True, pin_memory=pin, num_workers=os.cpu_count() // 2)
-    test_dl = DataLoader(Subset(ds, test_idx),
-                         batch_size=cfg["training"]["batch_size"],
-                         shuffle=False, pin_memory=pin, num_workers=os.cpu_count() // 2)
+                          shuffle=shuffle, num_workers=2,
+                          pin_memory=True, persistent_workers=True)
+    return loader(tr_idx, True), loader(val_idx, False), loader(te_idx, False), te_idx, mean, std
 
-    test_meta = index_df.iloc[test_idx].reset_index(drop=True)
+def build_model(cfg, device):
+    from models.tcn import TemporalConvNet
+    core = TemporalConvNet(cfg["model"]["input_size"],
+                           cfg["model"]["hidden_channels"],
+                           kernel_size=cfg["model"]["kernel_size"],
+                           dropout=cfg["model"]["dropout"])
+    head = nn.Conv1d(cfg["model"]["hidden_channels"][-1],
+                     cfg["model"]["output_size"], 1)
+    return nn.Sequential(core, head).to(device)
 
-    # Model
-    from models.tcn import TemporalConvNet  # local import avoids circular deps
+def warmup_cosine_lr(epoch:int,
+                     total_epochs:int,
+                     warmup_epochs:int,
+                     base_lr:float|str,
+                     min_lr:float = 1e-6) -> float:
+    base_lr = float(base_lr)
+    if epoch <= warmup_epochs:
+        return min_lr + (base_lr - min_lr) * (epoch / warmup_epochs)
 
-    model_core = TemporalConvNet(num_inputs=cfg["model"]["input_size"],
-                                 num_channels=cfg["model"]["hidden_channels"],
-                                 kernel_size=cfg["model"]["kernel_size"],
-                                 dropout=cfg["model"]["dropout"])
-    final_conv = nn.Conv1d(cfg["model"]["hidden_channels"][-1],
-                           cfg["model"]["output_size"], kernel_size=1)
+    progress = (epoch - warmup_epochs) / max(1, total_epochs - warmup_epochs)
+    cosine   = 0.5 * (1 + math.cos(math.pi * progress))
+    return min_lr + (base_lr - min_lr) * cosine
 
-    model = nn.Sequential(model_core, final_conv).to(device)
+### Main (Train/Eval)
 
-    # Optim setup
-    optimizer = optim.Adam(model.parameters(), lr=cfg["training"]["lr"])
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min",
-                                                     factor=0.3, patience=3, verbose=True)
-    scaler = GradScaler(enabled=device.type == "cuda")
-    criterion = nn.MSELoss()
+def run(cfg, eval_only=False):
+    # ---------- data ----------
+    X   = np.load(cfg["data"]["X_path"], mmap_mode="r")
+    y   = np.load(cfg["data"]["y_path"], mmap_mode="r")
+    idx = pd.read_csv(cfg["data"]["sequence_index"])
+    dl_tr, dl_val, dl_te, te_idx, mean, std = build_loaders(cfg, X, y, idx)
 
-    # Train loop
-    epochs = cfg["training"]["epochs"]
-    for epoch in range(1, epochs + 1):
-        model.train()
-        epoch_loss = 0.0
-        start = time.time()
+    # ---------- model ----------
+    dev   = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = build_model(cfg, dev)
+    FH    = cfg["model"]["forecast_horizon"]
+    out   = Path(cfg["output"]["directory"]); out.mkdir(parents=True, exist_ok=True)
 
-        for xb, yb in tqdm(train_dl, desc=f"Epoch {epoch}/{epochs}"):
-            xb = xb.to(device).permute(0, 2, 1)  # (B, C, T)
-            yb = yb.to(device)
+    if not eval_only:
+        opt     = optim.Adam(model.parameters(), lr=float(cfg["training"]["lr"]))
+        scaler  = GradScaler(enabled=dev.type == "cuda")
+        crit    = nn.MSELoss()
+        E       = cfg["training"]["epochs"]
+        W       = cfg["training"]["warmup_epochs"]
 
-            optimizer.zero_grad()
-            with autocast(enabled=device.type == "cuda"):
-                out = model(xb)                      # (B, 6, 52)
-                out = out[:, :, -F_HORIZ:].permute(0, 2, 1)  # (B, 26, 6)
-                loss = criterion(out, yb)
+        losses, val_losses = [], []
+        print("Training TCN...")
+        for epoch in range(1, E + 1):
+            # ---- set LR ----
+            lr = warmup_cosine_lr(epoch, E, W, cfg["training"]["lr"])
+            for pg in opt.param_groups: pg["lr"] = lr
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            # ---- train ----
+            model.train(); tot=0; t0=time.time()
+            for xb,yb in tqdm(dl_tr, desc=f"Epoch {epoch:02d}", leave=False):
+                xb,yb = xb.to(dev).permute(0,2,1), yb.to(dev)
+                opt.zero_grad(set_to_none=True)
+                with autocast(device_type=dev.type, enabled=dev.type=="cuda"):
+                    pred = model(xb)[:,:, -FH:].permute(0,2,1)
+                    loss = crit(pred, yb)
+                scaler.scale(loss).backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(opt); scaler.update(); tot += loss.item()
+            train_loss = tot/len(dl_tr); losses.append(train_loss)
 
-            epoch_loss += loss.item()
+            # ---- val ----
+            model.eval(); vtot=0
+            with torch.no_grad():
+                for xb,yb in dl_val:
+                    xb,yb = xb.to(dev).permute(0,2,1), yb.to(dev)
+                    with autocast(device_type=dev.type, enabled=dev.type=="cuda"):
+                        vloss = crit(model(xb)[:,:, -FH:].permute(0,2,1), yb)
+                    vtot += vloss.item()
+            val_loss = vtot/len(dl_val); val_losses.append(val_loss)
 
-        avg = epoch_loss / len(train_dl)
-        scheduler.step(avg)
-        print(f"Epoch {epoch:02d} | loss={avg:.5f} | time={(time.time()-start)/60:.1f} min")
+            print(f"Epoch {epoch:02d} | Train {train_loss:.3f} | Val {val_loss:.3f} | "
+                  f"LR {lr:.2e} | {(time.time()-t0)/60:.1f} min")
 
-    # Eval
-    model.eval()
-    preds, trues = [], []
+            # save checkpoint each epoch (optional)
+            torch.save(model.state_dict(), out/'best.pt')
+
+        json.dump({"train": losses, "val": val_losses},
+                  open(out/'train_losses.json','w'), indent=2)
+
+    else:
+        print("Eval-only mode — loading best.pt")
+        model.load_state_dict(torch.load(out/'best.pt'))
+
+    # ---------- evaluation ----------
+    model.eval(); preds, trues = [], []
     with torch.no_grad():
-        for xb, yb in tqdm(test_dl, desc="Evaluating"):
-            xb = xb.to(device).permute(0, 2, 1)
-            with autocast(enabled=device.type == "cuda"):
-                pb = model(xb)
-                pb = pb[:, :, -F_HORIZ:].permute(0, 2, 1)
-            preds.append(pb.cpu().numpy())
-            trues.append(yb.numpy())
+        for xb,yb in tqdm(dl_te, desc="Evaluating"):
+            xb = xb.to(dev).permute(0,2,1)
+            with autocast(device_type=dev.type, enabled=dev.type=="cuda"):
+                p = model(xb)[:,:, -FH:].permute(0,2,1)
+            preds.append(p.cpu().numpy()); trues.append(yb.numpy())
+    y_pred, y_true = map(lambda a: np.nan_to_num(np.concatenate(a)), (preds, trues))
 
-    y_pred = np.concatenate(preds, axis=0)  # (samples, 26, 6)
-    y_true = np.concatenate(trues, axis=0)
+    from metrics import compute_metrics
+    m_df = compute_metrics(y_true, y_pred, target_cols=cfg["targets"])
+    m_df.to_csv(out/'tcn_metrics.csv', index=False)
 
-    # Metrics
-    from utils.metrics import compute_metrics
+    # flat inference
+    samples, steps, _ = y_pred.shape
+    base = idx.iloc[te_idx].reset_index(drop=True)
+    rep  = np.repeat(base.index.values, steps)
+    flat = base.iloc[rep].copy()
+    flat["week_offset"] = np.tile(np.arange(steps), len(base))
+    flat = pd.concat([flat.reset_index(drop=True),
+                      pd.DataFrame({"true": y_true.ravel(),
+                                    "predicted": y_pred.ravel()})], axis=1)
+    flat.to_csv(out/'tcn_inference.csv', index=False)
+    print("Artifacts saved to", out, flush=True)
 
-    metrics_df = compute_metrics(y_true, y_pred, target_cols=cfg["targets"], flatten=True)
-    out_dir = Path(cfg["output"]["directory"])
-    out_dir.mkdir(parents=True, exist_ok=True)
-    metrics_df.to_csv(out_dir / "tcn_metrics.csv", index=False)
-    print("Metrics saved →", out_dir / "tcn_metrics.csv")
-
-    # Inference export
-    samples, steps, tgts = y_pred.shape
-    flat_idx = test_meta.loc[test_meta.index.repeat(steps)].copy()
-    flat_idx["week_offset"] = np.tile(np.arange(steps), len(test_meta))
-
-    results = pd.DataFrame({
-        "true": y_true.reshape(-1),
-        "predicted": y_pred.reshape(-1),
-    })
-    results = pd.concat([flat_idx.reset_index(drop=True), results], axis=1)
-    results.to_csv(out_dir / "tcn_inference.csv", index=False)
-    print("Flat predictions saved →", out_dir / "tcn_inference.csv")
-
-    # -------------------- Model checkpoint -----------------------------------
-    torch.save(model.state_dict(), out_dir / "tcn_state_dict.pt")
-    print("Checkpoint saved →", out_dir / "tcn_state_dict.pt")
-
-
-# Entry-point
+# ──────────────────────────── CLI ───────────────────────────────
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config.yaml", help="Path to YAML config file")
-    args = parser.parse_args()
-
-    with open(args.config, "r") as f:
-        cfg = yaml.safe_load(f)
-    main(cfg)
-
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", required=True)
+    ap.add_argument("--eval_only", action="store_true")
+    args = ap.parse_args()
+    cfg = yaml.safe_load(open(args.config))
+    run(cfg, eval_only=args.eval_only)

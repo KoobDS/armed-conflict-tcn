@@ -1,23 +1,26 @@
 data:
-  X_path: C:/Users/benja/Documents/ACLED/processed_data/X_tcn.npy
-  y_path: C:/Users/benja/Documents/ACLED/processed_data/y_tcn.npy
-  sequence_index: C:/Users/benja/Documents/ACLED/processed_data/sequence_index.csv
+  X_path: /content/local_tcn/X_tcn.npy
+  y_path: /content/local_tcn/y_tcn.npy
+  sequence_index: /content/local_tcn/sequence_index.csv   # has history_start column
 
 output:
-  directory: outputs/tcn
+  directory: /content/drive/MyDrive/ACLED_TCN/outputs/tcn   # best.pt + csvs land here
 
 training:
-  batch_size: 1024
-  epochs: 25
+  batch_size: 1280
+  epochs: 45
   lr: 1e-3
+  val_split: 0.1
+  warmup_epochs: 7
+
 
 model:
-  input_size: 7  # all the target features plus population
+  input_size: 7
   output_size: 6
   forecast_horizon: 26
-  hidden_channels: [64, 64, 128, 128, 128, 128] # every output sees a full year of history
+  hidden_channels: [256, 256, 512, 512]
   kernel_size: 3
-  dropout: 0.15
+  dropout: 0.2
 
 targets:
   - fatalities
