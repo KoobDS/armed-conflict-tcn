@@ -20,7 +20,7 @@ TCN wins on four of six conflict types; RF excels on the remaining two, therefor
 ---
 
 ## Tech stack
-- **Python 3.10**   ·  PyTorch 2.3   ·  Optuna HPO  
+- **Python 3.10**   ·  PyTorch 2.3
 - scikit‑learn 1.5 (Random Forest baseline)  
 - pandas 2.2 · NumPy 2.2  
 - YAML‑driven configs (`config.yaml`)  
@@ -50,11 +50,10 @@ pip install -r requirements.txt
 ```
 python train_TCN.py --config config.yaml
 
-My contribution:
-Benjamin Koob: end‑to‑end prediction pipeline
-- merged & cleaned ACLED sequences
-- engineered 52 -> 26‑week tensors
-- authored all RF & TCN training scripts, inference, and evaluation plots
+My contribution (Benjamin Koob): End‑to‑end prediction pipeline
+- Merged & cleaned ACLED sequences.
+- Engineered 52 -> 26‑week tensors.
+- Authored all RF & TCN training scripts, inference, and evaluation plots.
 Teammates (see commit log): Assisted in modeling or focused on socio‑economic impact analysis (panel regression / PVAR) and dashboarding.
 
-This README summarises the forecasting component; impact‑analysis notebooks were outside my scope of interest.
+This README summarizes the forecasting component; impact‑analysis notebooks were outside my scope of interest.
