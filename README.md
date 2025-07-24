@@ -57,3 +57,4 @@ My contribution (Benjamin Koob): End‑to‑end prediction pipeline
 Teammates (see commit log): Assisted in modeling or focused on socio‑economic impact analysis (panel regression / PVAR) and dashboarding.
 
 This README summarizes the forecasting component; impact‑analysis notebooks were outside my scope of interest.
+Note: The full technical report cannot be released due to a restriction.
