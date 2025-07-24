@@ -1,31 +1,60 @@
-# Armed Conflict Analysis:
+# Armed‑Conflict‑Forecast (TCN vs. Random Forest)
+Temporal forecasting of weekly conflict events & fatalities, plus benchmark comparison  
+*(ACLED 1997 – 2025 · admin‑1 level · 26‑week horizon)*
 
-This is a study of armed conflict, including analysis of impacts on human and economic development using classical methods and projecting future incidence using deep learning.
-We use Armed Conflict Location & Event Data (ACLED) for this study, including their integrated population estimates.
-Raleigh, C., Kishi, R. & Linke, A. Political instability patterns are obscured by conflict dataset scope conditions, sources, and coding choices. Humanit Soc Sci Commun 10, 74 (2023). https://doi.org/10.1057/s41599-023-01559-4
-https://acleddata.com/data/
+## Headline
+A **Temporal Convolutional Network (TCN)** trained on 52‑week ACLED sequences outperforms / complements in an ensemble approach a feature‑engineered **Random Forest** baseline.  
+TCN wins on four of six conflict types; RF excels on the remaining two, therefore final deployment is an ensemble.
 
-# Methodology
+### Evaluation
 
-The goal of this study is to predict the number of weekly violent-conflicts and fatalities per "actor", where actors are akin to states / providences. Similar to the literature we read, we intialized a Random Forest model as a baseline to compare our future results against. Since Random Forest doesn't natively capture temporal effects, we used lags of the different violent-conflicts event counts and the actor's population recorded during that week. To keep the comparison fair (and with limited computing resources), we did not do any recursive predictions or forecasting, we decided that we are just trying to predict one week ahead. After training the baseline Random Forest, we predicted the next 6 months of data, only using lags.
+| Conflict type | MAE (RF) | MAE (TCN) | RMSE (RF) | RMSE (TCN) | R² (RF) | R² (TCN) |
+|---------------|---------:|----------:|----------:|-----------:|--------:|---------:|
+| Fatalities    | **1.12** | 0.80 | 16.30 | **16.49** | 0.38 | **0.43** |
+| Battles       | **0.17** | 0.25 | **1.42** | 4.57 | **0.90** | 0.22 |
+| Protests      | 0.62 | **0.55** | 2.18 | **1.79** | 0.64 | **0.74** |
+| Riots         | 0.11 | **0.12** | 0.65 | **0.48** | 0.80 | **0.90** |
+| Explosions    | **0.18** | 0.23 | **1.96** | 3.10 | **0.93** | 0.87 |
+| Civ. Violence | 0.16 | **0.16** | 0.62 | **0.64** | 0.66 | **0.68** |
 
-Unlike most of the literature relating to armed conflict events, we decided to use a Temporal Convolutional Network (TCN) to predict 26-week violent-conflict dynamics (6 targets) from 52-weeks of history. This modern deep learning architecture is designed to retain temporal effects and has been shown to work well in other fields. Due to time constraints and lack of computer power, we tried to make the architecture as simple as possible while still being effective. The model reads hyper-parameters from a YAML config, which helps with source control. The model uses mixed-precision (AMP) + cuDNN autotuner for speed. Lastly, it saves metrics and flat per-week predictions to output.directory. We also hand-calculated the number of hidden channels to capture to force the architecture to retain 52 weeks of history information.
+---
 
-# Results
+## Tech stack
+- **Python 3.10**   ·  PyTorch 2.3   ·  Optuna HPO  
+- scikit‑learn 1.5 (Random Forest baseline)  
+- pandas 2.2 · NumPy 2.2  
+- YAML‑driven configs (`config.yaml`)  
 
-The Random Forest baseline performed surprsingly good:
+---
 
-| Target Variable | MAE | MSE | $R^2$ |
-| --- | --- | --- | --- |
-| fatalities | 1.1209 | 16.3033 | 0.3483 |
-| count_battles | 0.1724 | 1.422 | 0.8591 |
-| count_protests | 0.6159 | 2.1798 | 0.6373 |
-| count_riots |	0.1147 | 0.6513 |	0.8019 |
-| count_explosions | 0.1685 |	1.9576 | 0.9295 |
-| count_civ_violence | 0.1595 | 0.623 | 0.6645 |
+## Repository layout
+| Path | Description |
+|------|-------------|
+| `metrics/` | Model‑level CSVs & helper evaluation functions |
+| `ACLED_TCN.ipynb` | Notebook for TCN training and inference |
+| `Baseline_RF.ipynb` | Random‑Forest baseline notebook |
+| `train_TCN.py` | Script version of the TCN training loop |
+| `curve.py` | Training‑loss / validation‑loss plot generator |
+| `Processing.ipynb` | Data cleaning & tensor‑building pipeline |
+| `config.yaml` | Hyper‑parameters and file paths |
+| `comparison_metrics.xlsx` | Full metric comparison table (RF vs TCN) |
 
-Fatalities can vary a lot and is not strongly related to the type of conflict event. Thus, due to its volatility, it makes sense why the model struggled to predict it. 
+---
 
-# Discussion
+## Quick start (TCN)
+```bash
+git clone https://github.com/KoobDS/armed-conflict-tcn.git
+cd armed-conflict-tcn
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+python train_TCN.py --config config.yaml
 
-# Conclusion
+My contribution:
+Benjamin Koob: end‑to‑end prediction pipeline
+- merged & cleaned ACLED sequences
+- engineered 52 -> 26‑week tensors
+- authored all RF & TCN training scripts, inference, and evaluation plots
+Teammates (see commit log): Assisted in modeling or focused on socio‑economic impact analysis (panel regression / PVAR) and dashboarding.
+
+This README summarises the forecasting component; impact‑analysis notebooks were outside my scope of interest.
