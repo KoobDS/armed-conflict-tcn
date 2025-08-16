@@ -1,6 +1,6 @@
 # Armed‑Conflict‑Forecast (TCN vs. Random Forest)
-Temporal forecasting of weekly conflict events & fatalities, plus benchmark comparison  
-*(ACLED 1997 – 2025 · admin‑1 level · 26‑week horizon)*
+Temporal forecasting of weekly conflict events & fatalities, plus benchmark comparison.  
+*Data: ACLED 1997 – 2025 · admin‑1 level · sequences 52->26 wks*
 
 ## Headline
 A **Temporal Convolutional Network (TCN)** trained on 52‑week ACLED sequences outperforms / complements in an ensemble approach a feature‑engineered **Random Forest** baseline.  
@@ -20,10 +20,18 @@ TCN wins on four of six conflict types; RF excels on the remaining two, therefor
 ---
 
 ## Tech stack
-- **Python 3.10**   ·  PyTorch 2.3
-- scikit‑learn 1.5 (Random Forest baseline)  
-- pandas 2.2 · NumPy 2.2  
-- YAML‑driven configs (`config.yaml`)  
+- Python 3.10
+- PyTorch 2.3
+- NumPy 2.2 · pandas 2.2 · scikit‑learn 1.5
+- YAML‑driven config (`config.yaml`)  
+
+---
+
+My contribution (Benjamin Koob): End‑to‑end prediction pipeline
+- Merged & cleaned ACLED sequences.
+- Engineered 52 -> 26‑week tensors.
+- Authored all RF & TCN training scripts, inference, and evaluation plots.
+Teammates (see commit log): Assisted in modeling or focused on socio‑economic impact analysis (panel regression / PVAR) and dashboarding.
 
 ---
 
@@ -47,16 +55,9 @@ git clone https://github.com/KoobDS/armed-conflict-tcn.git
 cd armed-conflict-tcn
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-```
 python train_TCN.py --config config.yaml
-
-My contribution (Benjamin Koob): End‑to‑end prediction pipeline
-- Merged & cleaned ACLED sequences.
-- Engineered 52 -> 26‑week tensors.
-- Authored all RF & TCN training scripts, inference, and evaluation plots.
-Teammates (see commit log): Assisted in modeling or focused on socio‑economic impact analysis (panel regression / PVAR) and dashboarding.
+```
 
 This README summarizes the forecasting component; impact‑analysis notebooks were outside my scope of interest.
-
 
 Note: The full technical report cannot be released due to a restriction.
